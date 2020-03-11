@@ -13,366 +13,213 @@
 # limitations under the License.
 
 
-"""Environment that can be used with OpenAI Baselines."""
+"""Allows different types of players to play against each other."""
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import collections
-import cv2
-from gfootball.env import observation_preprocessing
+import copy
+import importlib
+from absl import logging
+
+from gfootball.env import config as cfg
+from gfootball.env import constants
+from gfootball.env import football_action_set
+from gfootball.env import football_env_core
+from gfootball.env import observation_rotation
 import gym
 import numpy as np
 
+class FootballEnv(gym.Env):
+  """Allows multiple players to play in the same environment."""
 
-class GetStateWrapper(gym.Wrapper):
-  """A wrapper that only dumps traces/videos periodically."""
+  def __init__(self, config):
+    self._config = config
+    player_config = {'index': 0}
+    # There can be at most one agent at a time. We need to remember its
+    # team and the index on the team to generate observations appropriately.
+    self._agent = None
+    self._agent_index = -1
+    self._agent_left_position = -1
+    self._agent_right_position = -1
+    self._players = self._construct_players(config['players'], player_config)
+    self._env = football_env_core.FootballEnvCore(self._config)
+    self._num_actions = len(football_action_set.get_action_set(self._config))
+    self._cached_observation = None
+    self._num_lteam = self._env.num_lteam
+    self._num_rteam = self._env.num_rteam
 
-  def __init__(self, env):
-    gym.Wrapper.__init__(self, env)
-    self._wrappers_with_support = {
-        'CheckpointRewardWrapper', 'FrameStack', 'GetStateWrapper',
-        'SingleAgentRewardWrapper', 'SingleAgentObservationWrapper',
-        'SMMWrapper', 'PeriodicDumpWriter', 'Simple115StateWrapper',
-        'PixelsStateWrapper'
-    }
+  @property
+  def action_space(self):
+    if self._config.number_of_players_agent_controls() > 1:
+      return gym.spaces.MultiDiscrete(
+          [self._num_actions] * self._config.number_of_players_agent_controls())
+    return gym.spaces.Discrete(self._num_actions)
 
-  def _check_state_supported(self):
-    o = self
-    while True:
-      name = o.__class__.__name__
-      if o.__class__.__name__ == 'FootballEnv':
-        break
-      assert name in self._wrappers_with_support, (
-          'get/set state not supported'
-          ' by {} wrapper').format(name)
-      o = o.env
-
-  def get_state(self):
-    self._check_state_supported()
-    to_pickle = {}
-    return self.env.get_state(to_pickle)
-
-  def set_state(self, state):
-    self._check_state_supported()
-    self.env.set_state(state)
-
-
-class PeriodicDumpWriter(gym.Wrapper):
-  """A wrapper that only dumps traces/videos periodically."""
-
-  def __init__(self, env, dump_frequency):
-    gym.Wrapper.__init__(self, env)
-    self._dump_frequency = dump_frequency
-    self._original_dump_config = {
-        'write_video': env._config['write_video'],
-        'dump_full_episodes': env._config['dump_full_episodes'],
-        'dump_scores': env._config['dump_scores'],
-    }
-    self._current_episode_number = 0
-
-  def step(self, action):
-    return self.env.step(action)
-
-  def reset(self):
-    if (self._dump_frequency > 0 and
-        (self._current_episode_number % self._dump_frequency == 0)):
-      self.env._config.update(self._original_dump_config)
-      self.env.render()
-    else:
-      self.env._config.update({'write_video': False,
-                               'dump_full_episodes': False,
-                               'dump_scores': False})
-      self.env.disable_render()
-    self._current_episode_number += 1
-    return self.env.reset()
-
-
-class Simple115StateWrapper(gym.ObservationWrapper):
-  """A wrapper that converts an observation to 115-features state."""
-
-  def __init__(self, env):
-    gym.ObservationWrapper.__init__(self, env)
-    shape = (self.env.unwrapped._config.number_of_players_agent_controls(), 115)
-    self.observation_space = gym.spaces.Box(
-        low=-1, high=1, shape=shape, dtype=np.float32)
-
-  def observation(self, observation):
-    """Converts an observation into simple115 format.
-
-    Args:
-      observation: observation that the environment returns
-
-    Returns:
-      (N, 115) shaped representation, where N stands for the number of players
-      being controlled.
-    """
-    final_obs = []
-    for obs in observation:
-      o = []
-      o.extend(obs['left_team'].flatten())
-      o.extend(obs['left_team_direction'].flatten())
-      o.extend(obs['right_team'].flatten())
-      o.extend(obs['right_team_direction'].flatten())
-
-      # If there were less than 11vs11 players we backfill missing values with
-      # -1.
-      # 88 = 11 (players) * 2 (teams) * 2 (positions & directions) * 2 (x & y)
-      if len(o) < 88:
-        o.extend([-1] * (88 - len(o)))
-
-      # ball position
-      o.extend(obs['ball'])
-      # ball direction
-      o.extend(obs['ball_direction'])
-      # one hot encoding of which team owns the ball
-      if obs['ball_owned_team'] == -1:
-        o.extend([1, 0, 0])
-      if obs['ball_owned_team'] == 0:
-        o.extend([0, 1, 0])
-      if obs['ball_owned_team'] == 1:
-        o.extend([0, 0, 1])
-
-      active = [0] * 11
-      if obs['active'] != -1:
-        active[obs['active']] = 1
-      o.extend(active)
-
-      game_mode = [0] * 7
-      game_mode[obs['game_mode']] = 1
-      o.extend(game_mode)
-      final_obs.append(o)
-    return np.array(final_obs, dtype=np.float32)
-
-
-class MultiAgentStateWrapper(gym.ObservationWrapper):
-  """A wrapper that converts an observation to the view of each controlled player."""
-  # The positions are converted to each agent's frame.
-
-  def __init__(self, env):
-    gym.ObservationWrapper.__init__(self, env)
-    num_lteam_players = self.env._num_lteam
-    num_rteam_players = self.env._num_rteam
-    shape = (self.env.unwrapped._config.number_of_players_agent_controls(), 4*(num_lteam_players+num_rteam_players)+16)
-    self.observation_space = gym.spaces.Box(
-        low=-1, high=1, shape=shape, dtype=np.float32)
-
-  def observation(self, observation):
-    """Converts an observation into multiagent format.
-
-    Args:
-      observation: observation that the environment returns
-
-    Returns:
-      (N, 4*(num_lteam_players+num_rteam_players)+16) shaped representation, where N stands for the number of players
-      being controlled.
-    """
-    final_obs = []
-    # The active player can be in the left or the right team.
-    for i, obs in enumerate(observation):
-      active_index = obs['active']
-      if i < self.env.unwrapped._config.number_of_left_players():
-        active_pos = obs['left_team'][active_index, :]
+  def _construct_players(self, definitions, config):
+    result = []
+    left_position = 0
+    right_position = 0
+    for definition in definitions:
+      (name, d) = cfg.parse_player_definition(definition)
+      config_name = 'player_{}'.format(name)
+      if config_name in config:
+        config[config_name] += 1
       else:
-        active_pos = obs['right_team'][active_index, :]
+        config[config_name] = 0
+      try:
+        player_factory = importlib.import_module(
+            'gfootball.env.players.{}'.format(name))
+      except ImportError as e:
+        logging.error('Failed loading player "%s"', name)
+        logging.error(e)
+        exit(1)
+      player_config = copy.deepcopy(config)
+      player_config.update(d)
+      player = player_factory.Player(player_config, self._config)
+      if name == 'agent':
+        assert not self._agent, 'Only one \'agent\' player allowed'
+        self._agent = player
+        self._agent_index = len(result)
+        self._agent_left_position = left_position
+        self._agent_right_position = right_position
+      result.append(player)
+      left_position += player.num_controlled_left_players()
+      right_position += player.num_controlled_right_players()
+      config['index'] += 1
+    return result
 
-      o = []
-      o.extend((obs['left_team'] - active_pos).flatten())
-      o.extend(obs['left_team_direction'].flatten())
-      o.extend((obs['right_team'] - active_pos).flatten())
-      o.extend(obs['right_team_direction'].flatten())
+  def _convert_observations(self, original, player,
+                            left_player_position, right_player_position):
+    """Converts generic observations returned by the environment to
+       the player specific observations.
 
-      active_pos = np.append(active_pos, 0)
-      # ball position
-      o.extend(obs['ball'] - active_pos)
-      # ball direction
-      o.extend(obs['ball_direction'])
-      # one hot encoding of which team owns the ball
-      if obs['ball_owned_team'] == -1:
-        o.extend([1, 0, 0])
-      if obs['ball_owned_team'] == 0:
-        o.extend([0, 1, 0])
-      if obs['ball_owned_team'] == 1:
-        o.extend([0, 0, 1])
-
-      game_mode = [0] * 7
-      game_mode[obs['game_mode']] = 1
-      o.extend(game_mode)
-      final_obs.append(o)
-    return np.array(final_obs, dtype=np.float32)
-
-class PixelsStateWrapper(gym.ObservationWrapper):
-  """A wrapper that extracts pixel representation."""
-
-  def __init__(self, env, grayscale=True,
-               channel_dimensions=(observation_preprocessing.SMM_WIDTH,
-                                   observation_preprocessing.SMM_HEIGHT)):
-    gym.ObservationWrapper.__init__(self, env)
-    self._grayscale = grayscale
-    self._channel_dimensions = channel_dimensions
-    self.observation_space = gym.spaces.Box(
-        low=0, high=255,
-        shape=(self.env.unwrapped._config.number_of_players_agent_controls(),
-               channel_dimensions[1], channel_dimensions[0],
-               1 if grayscale else 3),
-        dtype=np.uint8)
-
-  def observation(self, obs):
-    o = []
-    for observation in obs:
-      frame = observation['frame']
-      if self._grayscale:
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-      frame = cv2.resize(frame, (self._channel_dimensions[0],
-                                 self._channel_dimensions[1]),
-                         interpolation=cv2.INTER_AREA)
-      if self._grayscale:
-        frame = np.expand_dims(frame, -1)
-      o.append(frame)
-    return np.array(o, dtype=np.uint8)
-
-
-class SMMWrapper(gym.ObservationWrapper):
-  """A wrapper that returns an observation only for the first agent."""
-
-  def __init__(self, env,
-               channel_dimensions=(observation_preprocessing.SMM_WIDTH,
-                                   observation_preprocessing.SMM_HEIGHT)):
-    gym.ObservationWrapper.__init__(self, env)
-    self._channel_dimensions = channel_dimensions
-    shape = (self.env.unwrapped._config.number_of_players_agent_controls(),
-             channel_dimensions[1], channel_dimensions[0],
-             len(observation_preprocessing.get_smm_layers(
-                 self.env.unwrapped._config)))
-    self.observation_space = gym.spaces.Box(
-        low=0, high=255, shape=shape, dtype=np.uint8)
-
-  def observation(self, obs):
-    return observation_preprocessing.generate_smm(
-        obs, channel_dimensions=self._channel_dimensions,
-        config=self.env.unwrapped._config)
-
-
-class SingleAgentObservationWrapper(gym.ObservationWrapper):
-  """A wrapper that returns a reward only for the first agent."""
-
-  def __init__(self, env):
-    gym.ObservationWrapper.__init__(self, env)
-    self.observation_space = gym.spaces.Box(
-        low=env.observation_space.low[0],
-        high=env.observation_space.high[0],
-        dtype=env.observation_space.dtype)
-
-  def observation(self, obs):
-    return obs[0]
-
-
-class SingleAgentRewardWrapper(gym.RewardWrapper):
-  """A wrapper that converts an observation to a minimap."""
-
-  def __init__(self, env):
-    gym.RewardWrapper.__init__(self, env)
-
-  def reward(self, reward):
-    return reward[0]
-
-
-class CheckpointRewardWrapper(gym.RewardWrapper):
-  """A wrapper that adds a dense checkpoint reward."""
-
-  def __init__(self, env):
-    gym.RewardWrapper.__init__(self, env)
-    self._collected_checkpoints = {}
-    self._num_checkpoints = 10
-    self._checkpoint_reward = 0.1
-
-  def reset(self):
-    self._collected_checkpoints = {}
-    return self.env.reset()
-
-  def get_state(self, to_pickle):
-    to_pickle['CheckpointRewardWrapper'] = self._collected_checkpoints
-    return self.env.get_state(to_pickle)
-
-  def set_state(self, state):
-    from_pickle = self.env.set_state(state)
-    self._collected_checkpoints = from_pickle['CheckpointRewardWrapper']
-    return from_pickle
-
-  def reward(self, reward):
-    observation = self.env.unwrapped.observation()
-    if observation is None:
-      return reward
-
-    assert len(reward) == len(observation)
-
-    for rew_index in range(len(reward)):
-      o = observation[rew_index]
-      if reward[rew_index] == 1:
-        reward[rew_index] += self._checkpoint_reward * (
-            self._num_checkpoints -
-            self._collected_checkpoints.get(rew_index, 0))
-        self._collected_checkpoints[rew_index] = self._num_checkpoints
-        continue
-
-      # Check if the active player has the ball.
-      if ('ball_owned_team' not in o or
-          o['ball_owned_team'] != 0 or
-          'ball_owned_player' not in o or
-          o['ball_owned_player'] != o['active']):
-        continue
-
-      d = ((o['ball'][0] - 1) ** 2 + o['ball'][1] ** 2) ** 0.5
-
-      # Collect the checkpoints.
-      # We give reward for distance 1 to 0.2.
-      while (self._collected_checkpoints.get(rew_index, 0) <
-             self._num_checkpoints):
-        if self._num_checkpoints == 1:
-          threshold = 0.99 - 0.8
+    Args:
+      original: original observations from the environment.
+      player: player for which to generate observations.
+      left_player_position: index into observation corresponding to the left
+          player.
+      right_player_position: index into observation corresponding to the right
+          player.
+    """
+    observations = []
+    for is_left in [True, False]:
+      adopted = original if is_left or player.can_play_right(
+      ) else observation_rotation.flip_observation(original, self._config)
+      prefix = 'left' if is_left or not player.can_play_right() else 'right'
+      position = left_player_position if is_left else right_player_position
+      for x in range(player.num_controlled_left_players() if is_left
+                     else player.num_controlled_right_players()):
+        o = {}
+        for v in constants.EXPOSED_OBSERVATIONS:
+          # Active and sticky_actions are added below.
+          if v != 'active' and v != 'sticky_actions':
+            o[v] = copy.deepcopy(adopted[v])
+        assert (len(adopted[prefix + '_agent_controlled_player']) == len(
+            adopted[prefix + '_agent_sticky_actions']))
+        if position + x >= len(adopted[prefix + '_agent_controlled_player']):
+          o['active'] = -1
+          o['sticky_actions'] = []
         else:
-          threshold = (0.99 - 0.8 / (self._num_checkpoints - 1) *
-                       self._collected_checkpoints.get(rew_index, 0))
-        if d > threshold:
-          break
-        reward[rew_index] += self._checkpoint_reward
-        self._collected_checkpoints[rew_index] = (
-            self._collected_checkpoints.get(rew_index, 0) + 1)
-    return reward
+          o['active'] = (
+              adopted[prefix + '_agent_controlled_player'][position + x])
+          o['sticky_actions'] = np.array(copy.deepcopy(
+              adopted[prefix + '_agent_sticky_actions'][position + x]))
+        # There is no frame for players on the right ATM.
+        if is_left and 'frame' in original:
+          o['frame'] = original['frame']
+        observations.append(o)
+    return observations
 
+  def _action_to_list(self, a):
+    if isinstance(a, np.ndarray):
+      return a.tolist()
+    if not isinstance(a, list):
+      return [a]
+    return a
 
-class FrameStack(gym.Wrapper):
-  """Stack k last observations."""
-
-  def __init__(self, env, k):
-    gym.Wrapper.__init__(self, env)
-    self.obs = collections.deque([], maxlen=k)
-    low = env.observation_space.low
-    high = env.observation_space.high
-    low = np.concatenate([low] * k, axis=-1)
-    high = np.concatenate([high] * k, axis=-1)
-    self.observation_space = gym.spaces.Box(
-        low=low, high=high, dtype=env.observation_space.dtype)
-
-  def reset(self):
-    observation = self.env.reset()
-    self.obs.extend([observation] * self.obs.maxlen)
-    return self._get_observation()
-
-  def get_state(self, to_pickle):
-    to_pickle['FrameStack'] = self.obs
-    return self.env.get_state(to_pickle)
-
-  def set_state(self, state):
-    from_pickle = self.env.set_state(state)
-    self.obs = from_pickle['FrameStack']
-    return from_pickle
+  def _get_actions(self):
+    obs = self._env.observation()
+    left_actions = []
+    right_actions = []
+    left_player_position = 0
+    right_player_position = 0
+    for player in self._players:
+      adopted_obs = self._convert_observations(obs, player,
+                                               left_player_position,
+                                               right_player_position)
+      left_player_position += player.num_controlled_left_players()
+      right_player_position += player.num_controlled_right_players()
+      a = self._action_to_list(player.take_action(adopted_obs))
+      assert len(adopted_obs) == len(
+          a), 'Player provided {} actions instead of {}.'.format(
+              len(a), len(adopted_obs))
+      if not player.can_play_right():
+        for x in range(player.num_controlled_right_players()):
+          index = x + player.num_controlled_left_players()
+          a[index] = observation_rotation.flip_single_action(
+              a[index], self._config)
+      left_actions.extend(a[:player.num_controlled_left_players()])
+      right_actions.extend(a[player.num_controlled_left_players():])
+    actions = left_actions + right_actions
+    return actions
 
   def step(self, action):
-    observation, reward, done, info = self.env.step(action)
-    self.obs.append(observation)
-    return self._get_observation(), reward, done, info
+    action = self._action_to_list(action)
+    if self._agent:
+      self._agent.set_action(action)
+    else:
+      assert len(
+          action
+      ) == 0, 'step() received {} actions, but no agent is playing.'.format(
+          len(action))
 
-  def _get_observation(self):
-    return np.concatenate(list(self.obs), axis=-1)
+    _, reward, done = self._env.step(self._get_actions())
+    score_reward = reward
+    if self._agent:
+      reward = ([reward] * self._agent.num_controlled_left_players() +
+                [-reward] * self._agent.num_controlled_right_players())
+    self._cached_observation = None
+    return (self.observation(), np.array(reward, dtype=np.float32), done,
+            {'score_reward': score_reward})
+
+  def reset(self):
+    self._env.reset()
+    for player in self._players:
+      player.reset()
+    self._cached_observation = None
+    return self.observation()
+
+  def observation(self):
+    if not self._cached_observation:
+      self._cached_observation = self._env.observation()
+      if self._agent:
+        self._cached_observation = self._convert_observations(
+            self._cached_observation, self._agent,
+            self._agent_left_position, self._agent_right_position)
+    return self._cached_observation
+
+  def write_dump(self, name):
+    return self._env.write_dump(name)
+
+  def close(self):
+    self._env.close()
+
+  def get_state(self, to_pickle={}):
+    return self._env.get_state(to_pickle)
+
+  def set_state(self, state):
+    self._cached_observation = None
+    return self._env.set_state(state)
+
+  def tracker_setup(self, start, end):
+    self._env.tracker_setup(start, end)
+
+  def render(self, mode='human'):
+    self._cached_observation = None
+    return self._env.render(mode=mode)
+
+  def disable_render(self):
+    self._cached_observation = None
+    return self._env.disable_render()
