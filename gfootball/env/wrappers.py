@@ -146,6 +146,62 @@ class Simple115StateWrapper(gym.ObservationWrapper):
     return np.array(final_obs, dtype=np.float32)
 
 
+class MultiAgentStateWrapper(gym.ObservationWrapper):
+  """A wrapper that converts an observation to the view of each controlled player."""
+  # The positions are converted to each agent's frame.
+
+  def __init__(self, env):
+    gym.ObservationWrapper.__init__(self, env)
+    num_lteam_players = self.env._num_lteam
+    num_rteam_players = self.env._num_rteam
+    shape = (self.env.unwrapped._config.number_of_players_agent_controls(), 4*(num_lteam_players+num_rteam_players)+16)
+    self.observation_space = gym.spaces.Box(
+        low=-1, high=1, shape=shape, dtype=np.float32)
+
+  def observation(self, observation):
+    """Converts an observation into multiagent format.
+
+    Args:
+      observation: observation that the environment returns
+
+    Returns:
+      (N, 4*(num_lteam_players+num_rteam_players)+16) shaped representation, where N stands for the number of players
+      being controlled.
+    """
+    final_obs = []
+    # The active player can be in the left or the right team.
+    for i, obs in enumerate(observation):
+      active_index = obs['active']
+      if i < self.env.unwrapped._config.number_of_left_players():
+        active_pos = obs['left_team'][active_index, :]
+      else:
+        active_pos = obs['right_team'][active_index, :]
+
+      o = []
+      o.extend((obs['left_team'] - active_pos).flatten())
+      o.extend(obs['left_team_direction'].flatten())
+      o.extend((obs['right_team'] - active_pos).flatten())
+      o.extend(obs['right_team_direction'].flatten())
+
+      active_pos = np.append(active_pos, 0)
+      # ball position
+      o.extend(obs['ball'] - active_pos)
+      # ball direction
+      o.extend(obs['ball_direction'])
+      # one hot encoding of which team owns the ball
+      if obs['ball_owned_team'] == -1:
+        o.extend([1, 0, 0])
+      if obs['ball_owned_team'] == 0:
+        o.extend([0, 1, 0])
+      if obs['ball_owned_team'] == 1:
+        o.extend([0, 0, 1])
+
+      game_mode = [0] * 7
+      game_mode[obs['game_mode']] = 1
+      o.extend(game_mode)
+      final_obs.append(o)
+    return np.array(final_obs, dtype=np.float32)
+
 class PixelsStateWrapper(gym.ObservationWrapper):
   """A wrapper that extracts pixel representation."""
 
