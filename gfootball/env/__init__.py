@@ -47,6 +47,8 @@ def _process_representation_wrappers(env, representation, channel_dimensions):
                                       channel_dimensions)
   elif representation == 'simple115':
     env = wrappers.Simple115StateWrapper(env)
+  elif representation == 'multiagent':
+    env = wrappers.MultiAgentStateWrapper(env)
   elif representation == 'extracted':
     env = wrappers.SMMWrapper(env, channel_dimensions)
   elif representation == 'raw':
@@ -148,6 +150,9 @@ def create_environment(env_name='',
             CornerMode, ThrowInMode, PenaltyMode}.
          Can only be used when the scenario is a flavor of normal game
          (i.e. 11 versus 11 players).
+      'multiagent': similar to 'simple115', while the positions are converted to 
+        the frame of the active player, and the size is fit to any scenario and 
+        any number of (active and inactive) players.
     rewards: Comma separated list of rewards to be added.
        Currently supported rewards are 'scoring' and 'checkpoints'.
     write_goal_dumps: whether to dump traces up to 200 frames before goals.
