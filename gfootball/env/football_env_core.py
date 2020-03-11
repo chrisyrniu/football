@@ -62,6 +62,8 @@ class FootballEnvCore(object):
     # Reset is needed here to make sure render() API call before reset() API
     # call works fine (get/setState makes sure env. config is the same).
     self.reset(inc=0)
+    self.num_lteam = len(self._env.get_info().left_team)
+    self.num_rteam = len(self._env.get_info().right_team)
 
   def _reset(self, animations, inc):
     global _unused_engines
