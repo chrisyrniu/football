@@ -152,9 +152,9 @@ class MultiAgentStateWrapper(gym.ObservationWrapper):
 
   def __init__(self, env):
     gym.ObservationWrapper.__init__(self, env)
-    num_lteam_players = self.env._num_lteam
-    num_rteam_players = self.env._num_rteam
-    shape = (self.env.unwrapped._config.number_of_players_agent_controls(), 4*(num_lteam_players+num_rteam_players)+16)
+    self.num_lteam_players = self.env._num_lteam
+    self.num_rteam_players = self.env._num_rteam
+    shape = (self.env.unwrapped._config.number_of_players_agent_controls(), 4*(self.num_lteam_players+self.num_rteam_players)+16)
     self.observation_space = gym.spaces.Box(
         low=-1, high=1, shape=shape, dtype=np.float32)
 
@@ -165,7 +165,7 @@ class MultiAgentStateWrapper(gym.ObservationWrapper):
       observation: observation that the environment returns
 
     Returns:
-      (N, 4*(num_lteam_players+num_rteam_players)+16) shaped representation, where N stands for the number of players
+      (N, 4*(self.num_lteam_players+self.num_rteam_players)+16) shaped representation, where N stands for the number of players
       being controlled.
     """
     final_obs = []
