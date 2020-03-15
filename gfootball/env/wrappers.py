@@ -34,8 +34,8 @@ class GetStateWrapper(gym.Wrapper):
     self._wrappers_with_support = {
         'CheckpointRewardWrapper', 'FrameStack', 'GetStateWrapper',
         'SingleAgentRewardWrapper', 'SingleAgentObservationWrapper',
-        'SMMWrapper', 'PeriodicDumpWriter', 'Simple115StateWrapper',
-        'PixelsStateWrapper'
+        'SMMWrapper', 'PeriodicDumpWriter', 'Simple115StateWrapper', 
+        'MultiAgentStateWrapper', 'PixelsStateWrapper'
     }
 
   def _check_state_supported(self):
