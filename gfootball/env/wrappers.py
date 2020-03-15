@@ -34,7 +34,7 @@ class GetStateWrapper(gym.Wrapper):
     self._wrappers_with_support = {
         'CheckpointRewardWrapper', 'FrameStack', 'GetStateWrapper',
         'SingleAgentRewardWrapper', 'SingleAgentObservationWrapper',
-        'SMMWrapper', 'PeriodicDumpWriter', 'Simple115StateWrapper', 
+        'SMMWrapper', 'PeriodicDumpWriter', 'Simple115StateWrapper',
         'MultiAgentStateWrapper', 'PixelsStateWrapper'
     }
 
