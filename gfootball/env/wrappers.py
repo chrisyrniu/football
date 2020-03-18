@@ -298,6 +298,8 @@ class CheckpointRewardWrapper(gym.RewardWrapper):
     self._collected_checkpoints = {}
     self._num_checkpoints = 10
     self._checkpoint_reward = 0.1
+    self._num_lteam = self.env._num_lteam
+    self._num_rteam = self.env._num_rteam
 
   def reset(self):
     self._collected_checkpoints = {}
