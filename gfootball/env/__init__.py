@@ -25,7 +25,7 @@ from gfootball.env import wrappers
 
 
 def _process_reward_wrappers(env, rewards):
-  assert 'scoring' in rewards.split(',')
+  # assert 'scoring' in rewards.split(',')
   if 'checkpoints' in rewards.split(','):
     env = wrappers.CheckpointRewardWrapper(env)
   return env
