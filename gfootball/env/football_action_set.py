@@ -23,7 +23,7 @@ from __future__ import division
 from __future__ import print_function
 
 from gfootball_engine import e_BackendAction
-import numpy
+import numpy as np
 from six.moves import range
 
 
@@ -216,12 +216,16 @@ def named_action_from_action_set(action_set, action):
       set(action.__dict__) == set(action_set[0].__dict__)):
     return action
 
-  if (isinstance(action, numpy.int32) or isinstance(action, numpy.int64) or
+  if (isinstance(action, np.int32) or isinstance(action, np.int64) or
       isinstance(action, int)):
     # The action can be given as a numpy.int32 which cannot be
     # serialized. First convert it to a proper python integer.
     action = int(action)
     assert action < len(action_set), "Action outside of action set"
+    return action_set[action]
+
+  if isinstance(action, np.ndarray):
+    action = np.where(action==1)[0][0] 
     return action_set[action]
 
   assert False, "Action {} not found in action set".format(action)
