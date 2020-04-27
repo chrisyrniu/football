@@ -23,7 +23,7 @@ from . import *
 def build_scenario(builder):
   builder.config().game_duration = 400
   builder.config().deterministic = False
-  builder.config().adversary_processing = -1
+  builder.config().adversary_processing = 0
   builder.config().offsides = False
   builder.config().end_episode_on_score = True
   builder.config().end_episode_on_out_of_play = True
