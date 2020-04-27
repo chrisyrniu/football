@@ -296,8 +296,8 @@ class CheckpointRewardWrapper(gym.RewardWrapper):
   def __init__(self, env):
     gym.RewardWrapper.__init__(self, env)
     self._collected_checkpoints = {}
-    self._num_checkpoints = 10
-    self._checkpoint_reward = 0.1
+    self._num_checkpoints = 20
+    self._checkpoint_reward = 0.05
     self._num_lteam = self.env._num_lteam
     self._num_rteam = self.env._num_rteam
 
@@ -318,7 +318,6 @@ class CheckpointRewardWrapper(gym.RewardWrapper):
     observation = self.env.unwrapped.observation()
     if observation is None:
       return reward
-
     assert len(reward) == len(observation)
 
     for rew_index in range(len(reward)):
@@ -344,10 +343,14 @@ class CheckpointRewardWrapper(gym.RewardWrapper):
       while (self._collected_checkpoints.get(rew_index, 0) <
              self._num_checkpoints):
         if self._num_checkpoints == 1:
-          threshold = 0.99 - 0.8
+          threshold = 0.40 - 0.22
         else:
-          threshold = (0.99 - 0.8 / (self._num_checkpoints - 1) *
+          if rew_index == 0:
+            threshold = (0.37 - 0.22 / (self._num_checkpoints - 1) *
                        self._collected_checkpoints.get(rew_index, 0))
+          else:
+            threshold = (0.45 - 0.22 / (self._num_checkpoints - 1) *
+                       self._collected_checkpoints.get(rew_index, 0))            
         if d > threshold:
           break
         reward[rew_index] += self._checkpoint_reward
